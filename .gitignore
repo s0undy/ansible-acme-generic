@@ -1,0 +1,16 @@
+# Ansible vault files
+vars/vault.yaml
+
+# Variables with secrets (until migrated to vault)
+vars/letsencrypt_vars.yaml
+
+# Certificate files
+account/*.key
+
+# Temporary files
+*.retry
+*.tmp
+
+#Editor config
+.claude/
+.vscode/

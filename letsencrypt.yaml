@@ -1,0 +1,356 @@
+---
+- name: >-
+    Let's Encrypt SSL Certificate generation
+    using Cloudflare as DNS provider
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+  vars_files:
+    - vars/letsencrypt_vars.yaml
+    - vars/vault.yaml
+  tasks:
+    - name: Generate private key for ACME account
+      community.crypto.openssl_privatekey:
+        path: "{{ acme_account_key_path }}"
+        size: "{{ key_size }}"
+        type: RSA
+
+    - name: Enforce account key permissions (0600)
+      ansible.builtin.file:
+        path: "{{ acme_account_key_path }}"
+        mode: '0600'
+
+    - name: Register ACME account with Let's Encrypt
+      community.crypto.acme_account:
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        account_key_src: "{{ acme_account_key_path }}"
+        terms_agreed: true
+        state: present
+        contact:
+          - "mailto:{{ acme_account_email }}"
+
+    - name: Get ACME Account Info for debugging
+      community.crypto.acme_account_info:
+        acme_directory: "{{ acme_directory }}"
+        account_key_src: "{{ acme_account_key_path }}"
+        acme_version: "{{ acme_version }}"
+      register: acme_account_info
+
+    - name: Debug ACME Account Info
+      ansible.builtin.debug:
+        var: acme_account_info
+      when: debug_mode | bool
+
+    - name: Set up domain list for multi-domain/SAN support
+      ansible.builtin.set_fact:
+        all_domains: "{{ [domain_name] + (san_domains | default([])) }}"
+        cert_dir_name: "{{ domain_name }}/{{ certs_name }}"
+
+    - name: Display domain configuration
+      ansible.builtin.debug:
+        msg:
+          - "Primary domain: {{ domain_name }}"
+          - >-
+            Additional SANs:
+            {{ san_domains | default([]) | join(', ')
+            if san_domains | default([]) | length > 0
+            else 'None' }}
+          - "Total domains: {{ all_domains | length }}"
+          - "Certificate directory: {{ cert_dir_name }}"
+
+    - name: Create certificate directory
+      ansible.builtin.file:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Check if certificate already exists
+      ansible.builtin.stat:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem"
+      register: cert_stat
+
+    - name: Get certificate expiration info
+      community.crypto.x509_certificate_info:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem"
+      register: cert_info
+      when: cert_stat.stat.exists
+
+    - name: Set fact if certificate needs renewal
+      ansible.builtin.set_fact:
+        cert_needs_renewal: >-
+          {{
+            not cert_stat.stat.exists or
+            (cert_info.expired | default(true)) or
+            (((cert_info.not_after | default('1970-01-01T00:00:00')
+              | to_datetime('%Y%m%d%H%M%SZ')) -
+              (ansible_date_time.iso8601
+              | to_datetime('%Y-%m-%dT%H:%M:%SZ')))
+              .total_seconds() < (30 * 86400))
+          }}
+
+    - name: Display certificate status
+      ansible.builtin.debug:
+        msg: >-
+          {% if not cert_stat.stat.exists %}
+          Certificate does not exist. Will generate new certificate.
+          {% elif cert_info.expired | default(false) %}
+          Certificate has expired. Will renew.
+          {% elif cert_needs_renewal | bool %}
+          Certificate expires soon
+          ({{ cert_info.not_after[:4] }}-{{ cert_info.not_after[4:6] }}-
+          {{ cert_info.not_after[6:8] }}
+          {{ cert_info.not_after[8:10] }}:{{ cert_info.not_after[10:12] }}
+          UTC). Will renew.
+          {% else %}
+          Certificate is valid until
+          {{ cert_info.not_after[:4] }}-{{ cert_info.not_after[4:6] }}-
+          {{ cert_info.not_after[6:8] }}
+          {{ cert_info.not_after[8:10] }}:{{ cert_info.not_after[10:12] }}
+          UTC. Skipping renewal.
+          {% endif %}
+
+    - name: Check for existing passphrase file
+      ansible.builtin.stat:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/passphrase.txt"
+      register: passphrase_stat
+      when: cert_needs_renewal | bool
+
+    - name: Load existing passphrase
+      ansible.builtin.slurp:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/passphrase.txt"
+      register: passphrase_file
+      when:
+        - cert_needs_renewal | bool
+        - passphrase_stat.stat.exists | default(false)
+
+    - name: Set passphrase from existing file
+      ansible.builtin.set_fact:
+        passphrase: "{{ passphrase_file.content | b64decode | trim }}"
+      when:
+        - cert_needs_renewal | bool
+        - passphrase_stat.stat.exists | default(false)
+
+    - name: Generate random string as passphrase
+      ansible.builtin.set_fact:
+        passphrase: >-
+          {{ lookup('community.general.random_string', length=24) }}
+      when:
+        - cert_needs_renewal | bool
+        - not (passphrase_stat.stat.exists | default(false))
+
+    - name: Create backup directory for existing certificates
+      ansible.builtin.file:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/backups"
+        state: directory
+        mode: '0755'
+      when:
+        - cert_needs_renewal | bool
+        - cert_stat.stat.exists
+
+    - name: Backup existing certificates
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/backups/
+          {{ item | basename }}.{{ ansible_date_time.iso8601_basic_short }}
+        remote_src: true
+        mode: preserve
+      loop:
+        - "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem"
+        - "{{ certs_base_dir }}/{{ cert_dir_name }}/chain.pem"
+        - "{{ certs_base_dir }}/{{ cert_dir_name }}/fullchain.pem"
+        - "{{ certs_base_dir }}/{{ cert_dir_name }}/privatekey.pem"
+      when:
+        - cert_needs_renewal | bool
+        - cert_stat.stat.exists
+      failed_when: false
+
+    - name: Save random string to file
+      ansible.builtin.copy:
+        content: "{{ passphrase }}"
+        dest: "{{ certs_base_dir }}/{{ cert_dir_name }}/passphrase.txt"
+        mode: '0600'
+      when: cert_needs_renewal | bool
+
+    - name: Generate private key to be used with the certificate
+      community.crypto.openssl_privatekey:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/privatekey.pem"
+        type: RSA
+        size: 4096
+        cipher: auto
+        passphrase: "{{ passphrase }}"
+      when: cert_needs_renewal | bool
+
+    - name: Generate CSR with SAN support
+      community.crypto.openssl_csr:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.csr"
+        privatekey_path: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/privatekey.pem
+        privatekey_passphrase: "{{ passphrase }}"
+        common_name: "{{ domain_name }}"
+        subject_alt_name: >-
+          {{ all_domains
+          | map('regex_replace', '^(.*)$', 'DNS:\\1')
+          | list }}
+        country_name: SE
+        organization_name: "{{ organization_name }}"
+        email_address: "{{ acme_account_email }}"
+      when: cert_needs_renewal | bool
+
+    - name: Submit CSR to ACME CA
+      community.crypto.acme_certificate:
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        account_key_src: "{{ acme_account_key_path }}"
+        account_email: "{{ acme_account_email }}"
+        terms_agreed: true
+        challenge: "{{ acme_challenge_type }}"
+        csr: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/cert.csr
+        dest: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem
+        chain_dest: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/chain.pem
+        fullchain_dest: >-
+          {{ certs_base_dir }}/{{ cert_dir_name }}/fullchain.pem
+      register: acme_challenge
+      when: cert_needs_renewal | bool
+
+    - name: Debug ACME Challenge Info
+      ansible.builtin.debug:
+        var: acme_challenge
+      when:
+        - debug_mode | bool
+        - cert_needs_renewal | bool
+
+    # DNS Challenge block with proper error handling
+    # and multi-domain support
+    - name: DNS Challenge and Certificate Validation
+      when: cert_needs_renewal | bool
+      block:
+        - name: Check if challenges need validation
+          ansible.builtin.debug:
+            msg: >-
+              {% if acme_challenge.challenge_data
+              | default({}) | length > 0 %}
+              Challenges need validation for
+              {{ acme_challenge.challenge_data.keys()
+              | list | length }} domain(s)
+              {% else %}
+              All domain challenges already validated -
+              proceeding to certificate retrieval
+              {% endif %}
+
+        - name: >-
+            Create ACME Challenge records in Cloudflare DNS
+            for all domains
+          community.general.cloudflare_dns:
+            zone: "{{ cloudflare_zone }}"
+            record: "{{ acme_challenge['challenge_data'][item][acme_challenge_type].record | regex_replace('\\.' + cloudflare_zone + '$', '') }}"
+            type: TXT
+            value: "{{ acme_challenge['challenge_data'][item][acme_challenge_type].resource_value }}"
+            api_token: "{{ letsencrypt_cloudflare_api_token }}"
+            state: present
+          loop: "{{ all_domains }}"
+          register: dns_records_created
+          when: item in acme_challenge.get('challenge_data', {})
+
+        - name: Display created DNS records
+          ansible.builtin.debug:
+            msg: >-
+              Created
+              {{ dns_records_created.results
+              | rejectattr('skipped', 'defined')
+              | selectattr('changed', 'equalto', true)
+              | list | length }}
+              DNS challenge record(s)
+          when:
+            - dns_records_created is defined
+            - dns_records_created.results is defined
+            - >-
+              dns_records_created.skipped is not defined or
+              not dns_records_created.skipped
+            - >-
+              dns_records_created.results
+              | rejectattr('skipped', 'defined')
+              | list | length > 0
+
+        - name: Display no DNS records created message
+          ansible.builtin.debug:
+            msg: >-
+              No DNS records created -
+              challenges already validated
+          when: >-
+            dns_records_created is not defined or
+            (dns_records_created.skipped is defined and
+            dns_records_created.skipped)
+
+        - name: Wait for DNS propagation
+          ansible.builtin.pause:
+            seconds: 60
+            prompt: >-
+              Waiting 60 seconds for DNS records
+              to propagate via Cloudflare
+          when:
+            - dns_records_created is defined
+            - dns_records_created.results is defined
+            - >-
+              dns_records_created.results
+              | rejectattr('skipped', 'defined')
+              | selectattr('changed', 'equalto', true)
+              | list | length > 0
+
+        # Tells the LetsEncrypt service that the challenge records
+        # have been created and to validate domain ownership
+        - name: >-
+            Validate ACME Challenge and retrieve cert and cert chain
+          community.crypto.acme_certificate:
+            acme_directory: "{{ acme_directory }}"
+            acme_version: "{{ acme_version }}"
+            account_key_src: "{{ acme_account_key_path }}"
+            account_email: "{{ acme_account_email }}"
+            terms_agreed: true
+            challenge: "{{ acme_challenge_type }}"
+            csr: >-
+              {{ certs_base_dir }}/{{ cert_dir_name }}/cert.csr
+            dest: >-
+              {{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem
+            chain_dest: >-
+              {{ certs_base_dir }}/{{ cert_dir_name }}/chain.pem
+            fullchain_dest: >-
+              {{ certs_base_dir }}/{{ cert_dir_name }}/fullchain.pem
+            remaining_days: 91
+            data: "{{ acme_challenge }}"
+          register: cert_validation
+
+      rescue:
+        - name: Display error message
+          ansible.builtin.debug:
+            msg: >-
+              Certificate validation failed.
+              DNS record will be cleaned up.
+
+        - name: Fail with error details
+          ansible.builtin.fail:
+            msg: >-
+              Failed to validate certificate:
+              {{ ansible_failed_result.msg | default('Unknown error') }}
+
+      always:
+        - name: >-
+            Remove ACME Challenge records from Cloudflare DNS
+            for all domains
+          community.general.cloudflare_dns:
+            zone: "{{ cloudflare_zone }}"
+            record: "{{ acme_challenge['challenge_data'][item][acme_challenge_type].record | regex_replace('\\.' + cloudflare_zone + '$', '') }}"
+            type: TXT
+            state: absent
+            api_token: "{{ letsencrypt_cloudflare_api_token }}"
+          loop: "{{ all_domains }}"
+          when:
+            - dns_records_created is defined
+            - dns_records_created.results is defined
+            - item in acme_challenge.get('challenge_data', {})
+          failed_when: false

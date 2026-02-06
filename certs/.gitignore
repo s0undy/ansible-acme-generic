@@ -1,0 +1,5 @@
+# Dont commit any certificates or keys!
+# Ignores everything in this directory
+*
+# Except this file
+!.gitignore

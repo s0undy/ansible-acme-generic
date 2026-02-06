@@ -1,0 +1,8 @@
+# Ansible Vault file for sensitive credentials
+# To create the actual vault file:
+#   source /home/ansible-admin/ansible/.venv/bin/activate
+#   ansible-vault create vars/vault.yaml
+# Then paste this content and update with your actual credentials
+
+# Cloudflare API token for DNS-01 challenge
+letsencrypt_cloudflare_api_token: "your-cloudflare-api-token-here"
