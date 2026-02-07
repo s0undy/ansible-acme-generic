@@ -89,7 +89,7 @@
             (cert_info.expired | default(true)) or
             (((cert_info.not_after | default('1970-01-01T00:00:00')
               | to_datetime('%Y%m%d%H%M%SZ')) -
-              (ansible_date_time.iso8601
+              (ansible_facts.date_time.iso8601
               | to_datetime('%Y-%m-%dT%H:%M:%SZ')))
               .total_seconds() < (30 * 86400))
           }}
@@ -159,7 +159,7 @@
         src: "{{ item }}"
         dest: >-
           {{ certs_base_dir }}/{{ cert_dir_name }}/backups/
-          {{ item | basename }}.{{ ansible_date_time.iso8601_basic_short }}
+          {{ item | basename }}.{{ ansible_facts.date_time.iso8601_basic_short }}
         remote_src: true
         mode: preserve
       loop:
@@ -205,6 +205,7 @@
         acme_version: "{{ acme_version }}"
         account_key_src: "{{ acme_account_key_path }}"
         account_email: "{{ acme_account_email }}"
+        modify_account: false
         terms_agreed: true
         challenge: "{{ acme_challenge_type }}"
         csr: >-
@@ -225,10 +226,18 @@
         - debug_mode | bool
         - cert_needs_renewal | bool
 
+    - name: Check if certificate was already retrieved
+      ansible.builtin.stat:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem"
+      register: cert_retrieved
+      when: cert_needs_renewal | bool
+
     # DNS Challenge block with proper error handling
     # and multi-domain support
     - name: DNS Challenge and Certificate Validation
-      when: cert_needs_renewal | bool
+      when:
+        - cert_needs_renewal | bool
+        - not cert_retrieved.stat.exists or (acme_challenge.challenge_data | default({}) | length > 0)
       block:
         - name: Check if challenges need validation
           ansible.builtin.debug:
@@ -311,6 +320,7 @@
             acme_version: "{{ acme_version }}"
             account_key_src: "{{ acme_account_key_path }}"
             account_email: "{{ acme_account_email }}"
+            modify_account: false
             terms_agreed: true
             challenge: "{{ acme_challenge_type }}"
             csr: >-
@@ -354,3 +364,61 @@
             - dns_records_created.results is defined
             - item in acme_challenge.get('challenge_data', {})
           failed_when: false
+
+    - name: Check if standard PFX already exists
+      ansible.builtin.stat:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/certificate.pfx"
+      register: pfx_stat
+
+    - name: Check if legacy PFX already exists
+      ansible.builtin.stat:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/certificate-legacy.pfx"
+      register: pfx_legacy_stat
+
+    - name: Load passphrase for PFX export if not already loaded
+      ansible.builtin.slurp:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/passphrase.txt"
+      register: passphrase_file_for_pfx
+      when:
+        - passphrase is not defined
+        - (not pfx_stat.stat.exists or not pfx_legacy_stat.stat.exists)
+
+    - name: Set passphrase from file for PFX export
+      ansible.builtin.set_fact:
+        passphrase: "{{ passphrase_file_for_pfx.content | b64decode | trim }}"
+      when:
+        - passphrase is not defined
+        - passphrase_file_for_pfx is defined
+        - passphrase_file_for_pfx.content is defined
+
+    - name: Export certificate and key as PFX (PKCS#12)
+      community.crypto.openssl_pkcs12:
+        path: "{{ certs_base_dir }}/{{ cert_dir_name }}/certificate.pfx"
+        friendly_name: "{{ domain_name }}"
+        privatekey_path: "{{ certs_base_dir }}/{{ cert_dir_name }}/privatekey.pem"
+        privatekey_passphrase: "{{ passphrase }}"
+        certificate_path: "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem"
+        other_certificates: "{{ certs_base_dir }}/{{ cert_dir_name }}/chain.pem"
+        passphrase: "{{ passphrase }}"
+        mode: '0600'
+        state: present
+      when: not pfx_stat.stat.exists
+
+    - name: Export certificate and key as legacy PFX (for older systems)
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          openssl pkcs12 -export -legacy \
+            -out "{{ certs_base_dir }}/{{ cert_dir_name }}/certificate-legacy.pfx" \
+            -inkey "{{ certs_base_dir }}/{{ cert_dir_name }}/privatekey.pem" \
+            -in "{{ certs_base_dir }}/{{ cert_dir_name }}/cert.pem" \
+            -certfile "{{ certs_base_dir }}/{{ cert_dir_name }}/chain.pem" \
+            -passin "env:PFX_PASSPHRASE" \
+            -passout "env:PFX_PASSPHRASE" \
+            -name "{{ domain_name }}"
+          chmod 0600 "{{ certs_base_dir }}/{{ cert_dir_name }}/certificate-legacy.pfx"
+      environment:
+        PFX_PASSPHRASE: "{{ passphrase }}"
+      when: not pfx_legacy_stat.stat.exists
+      changed_when: true
+      no_log: true
