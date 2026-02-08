@@ -1,0 +1,26 @@
+---
+# ==============================================================================
+# Internal computed variables - do not override directly
+# ==============================================================================
+
+_letsencrypt_acme_directories:
+  staging: "https://acme-staging-v02.api.letsencrypt.org/directory"
+  production: "https://acme-v02.api.letsencrypt.org/directory"
+
+_letsencrypt_acme_directory: >-
+  {{ _letsencrypt_acme_directories[letsencrypt_environment] }}
+
+# Auto-compute account key path per environment (staging/production use separate keys)
+# User can override by setting letsencrypt_account_key_path to a non-empty value
+_letsencrypt_account_key_path: >-
+  {{ letsencrypt_account_key_path
+     if letsencrypt_account_key_path | length > 0
+     else 'account/' ~ letsencrypt_environment ~ '-account.key' }}
+
+# Resolve DNS provider tasks directory
+# Built-in providers: role_path/tasks/dns_providers/{provider}/
+# Custom providers: user-specified directory
+_letsencrypt_dns_tasks_dir: >-
+  {{ letsencrypt_dns_provider_tasks_dir
+     if letsencrypt_dns_provider == 'custom'
+     else (role_path ~ '/tasks/dns_providers/' ~ letsencrypt_dns_provider) }}

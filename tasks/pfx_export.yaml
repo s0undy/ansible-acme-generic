@@ -1,0 +1,64 @@
+---
+# PFX/PKCS#12 certificate export (standard and legacy formats)
+
+- name: Check if standard PFX already exists
+  ansible.builtin.stat:
+    path: "{{ _letsencrypt_cert_dir }}/certificate.pfx"
+  register: _letsencrypt_pfx_stat
+
+- name: Check if legacy PFX already exists
+  ansible.builtin.stat:
+    path: "{{ _letsencrypt_cert_dir }}/certificate-legacy.pfx"
+  register: _letsencrypt_pfx_legacy_stat
+
+- name: Load passphrase for PFX export if not already loaded
+  ansible.builtin.slurp:
+    path: "{{ _letsencrypt_cert_dir }}/passphrase.txt"
+  register: _letsencrypt_passphrase_file_for_pfx
+  when:
+    - _letsencrypt_passphrase is not defined
+    - (not _letsencrypt_pfx_stat.stat.exists or not _letsencrypt_pfx_legacy_stat.stat.exists)
+
+- name: Set passphrase from file for PFX export
+  ansible.builtin.set_fact:
+    _letsencrypt_passphrase: "{{ _letsencrypt_passphrase_file_for_pfx.content | b64decode | trim }}"
+  when:
+    - _letsencrypt_passphrase is not defined
+    - _letsencrypt_passphrase_file_for_pfx is defined
+    - _letsencrypt_passphrase_file_for_pfx.content is defined
+
+- name: Export certificate and key as PFX (PKCS#12)
+  community.crypto.openssl_pkcs12:
+    path: "{{ _letsencrypt_cert_dir }}/certificate.pfx"
+    friendly_name: "{{ letsencrypt_domain }}"
+    privatekey_path: "{{ _letsencrypt_cert_dir }}/privatekey.pem"
+    privatekey_passphrase: "{{ _letsencrypt_passphrase }}"
+    certificate_path: "{{ _letsencrypt_cert_dir }}/cert.pem"
+    other_certificates: "{{ _letsencrypt_cert_dir }}/chain.pem"
+    passphrase: "{{ _letsencrypt_passphrase }}"
+    mode: '0600'
+    state: present
+  when:
+    - letsencrypt_pfx_export | bool
+    - not _letsencrypt_pfx_stat.stat.exists
+
+- name: Export certificate and key as legacy PFX (for older systems)
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      openssl pkcs12 -export -legacy \
+        -out "{{ _letsencrypt_cert_dir }}/certificate-legacy.pfx" \
+        -inkey "{{ _letsencrypt_cert_dir }}/privatekey.pem" \
+        -in "{{ _letsencrypt_cert_dir }}/cert.pem" \
+        -certfile "{{ _letsencrypt_cert_dir }}/chain.pem" \
+        -passin "env:PFX_PASSPHRASE" \
+        -passout "env:PFX_PASSPHRASE" \
+        -name "{{ letsencrypt_domain }}"
+      chmod 0600 "{{ _letsencrypt_cert_dir }}/certificate-legacy.pfx"
+  environment:
+    PFX_PASSPHRASE: "{{ _letsencrypt_passphrase }}"
+  when:
+    - letsencrypt_pfx_legacy_export | bool
+    - not _letsencrypt_pfx_legacy_stat.stat.exists
+  changed_when: true
+  no_log: true

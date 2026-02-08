@@ -1,0 +1,26 @@
+---
+# Cloudflare DNS provider - Remove ACME challenge TXT records
+#
+# Expected variables:
+#   _letsencrypt_acme_challenge        - challenge data from acme_certificate module
+#   _letsencrypt_all_domains           - list of all domains to validate
+#   letsencrypt_challenge_type         - challenge type (dns-01)
+#   _letsencrypt_dns_records_created   - result from create.yaml
+#   letsencrypt_cloudflare_api_token   - Cloudflare API token
+#   letsencrypt_cloudflare_zone        - Cloudflare DNS zone
+
+- name: Remove ACME challenge records from Cloudflare DNS
+  community.general.cloudflare_dns:
+    zone: "{{ letsencrypt_cloudflare_zone }}"
+    record: >-
+      {{ _letsencrypt_acme_challenge['challenge_data'][item][letsencrypt_challenge_type].record
+         | regex_replace('\.' + letsencrypt_cloudflare_zone + '$', '') }}
+    type: TXT
+    state: absent
+    api_token: "{{ letsencrypt_cloudflare_api_token }}"
+  loop: "{{ _letsencrypt_all_domains }}"
+  when:
+    - _letsencrypt_dns_records_created is defined
+    - _letsencrypt_dns_records_created.results is defined
+    - item in _letsencrypt_acme_challenge.get('challenge_data', {})
+  failed_when: false

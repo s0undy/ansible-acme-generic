@@ -1,0 +1,25 @@
+---
+# Example playbook using the letsencrypt role
+#
+# This example runs from within the role directory itself.
+# When using the role from an external playbook, either:
+#   1. Add the role's parent directory to roles_path in ansible.cfg
+#   2. Or use the full path: role: /path/to/letsencrypt
+#
+# Usage:
+#   ansible-playbook example-playbook.yaml --ask-vault-pass
+#
+# For a custom DNS provider:
+#   Override letsencrypt_dns_provider and letsencrypt_dns_provider_tasks_dir
+#   in your vars file. See README.md for details.
+
+- name: Generate Let's Encrypt SSL Certificate
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+  vars_files:
+    - my-vars.yaml
+    - vault.yaml  # uncomment if using a separate vault file
+  roles:
+    - role: "{{ playbook_dir }}"

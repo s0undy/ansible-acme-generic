@@ -1,16 +1,19 @@
-# Ansible vault files
-vars/vault.yaml
+# User configuration files
+vars.yaml
+vault.yaml
 
-# Variables with secrets (until migrated to vault)
-vars/vars.yaml
+# User playbook
+playbook.yaml
 
-# Certificate files
+# Certificate files and account keys
+certs/
 account/*.key
 
 # Temporary files
 *.retry
 *.tmp
 
-#Editor config
+# Editor config
 .claude/
 .vscode/
+.ansible

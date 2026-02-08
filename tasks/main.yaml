@@ -1,0 +1,21 @@
+---
+# Let's Encrypt Role - Main task orchestrator
+#
+# Phases:
+#   1. ACME account setup
+#   2. Certificate configuration and renewal check
+#   3. DNS challenge validation (only if renewal needed)
+#   4. PFX export
+
+- name: ACME account setup
+  ansible.builtin.include_tasks: account.yaml
+
+- name: Certificate configuration and renewal check
+  ansible.builtin.include_tasks: certificate.yaml
+
+- name: DNS challenge and certificate validation
+  ansible.builtin.include_tasks: challenge.yaml
+  when: _letsencrypt_cert_needs_renewal | bool
+
+- name: PFX certificate export
+  ansible.builtin.include_tasks: pfx_export.yaml

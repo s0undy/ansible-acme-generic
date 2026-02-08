@@ -1,0 +1,56 @@
+---
+# Cloudflare DNS provider - Create ACME challenge TXT records
+#
+# Expected variables:
+#   _letsencrypt_acme_challenge - challenge data from acme_certificate module
+#   _letsencrypt_all_domains    - list of all domains to validate
+#   letsencrypt_challenge_type  - challenge type (dns-01)
+#   letsencrypt_cloudflare_api_token - Cloudflare API token
+#   letsencrypt_cloudflare_zone      - Cloudflare DNS zone
+#
+# Registers:
+#   _letsencrypt_dns_records_created - result of DNS record creation
+
+- name: Create ACME challenge records in Cloudflare DNS
+  community.general.cloudflare_dns:
+    zone: "{{ letsencrypt_cloudflare_zone }}"
+    record: >-
+      {{ _letsencrypt_acme_challenge['challenge_data'][item][letsencrypt_challenge_type].record
+         | regex_replace('\.' + letsencrypt_cloudflare_zone + '$', '') }}
+    type: TXT
+    value: "{{ _letsencrypt_acme_challenge['challenge_data'][item][letsencrypt_challenge_type].resource_value }}"
+    api_token: "{{ letsencrypt_cloudflare_api_token }}"
+    state: present
+  loop: "{{ _letsencrypt_all_domains }}"
+  register: _letsencrypt_dns_records_created
+  when: item in _letsencrypt_acme_challenge.get('challenge_data', {})
+
+- name: Display created DNS records
+  ansible.builtin.debug:
+    msg: >-
+      Created
+      {{ _letsencrypt_dns_records_created.results
+      | rejectattr('skipped', 'defined')
+      | selectattr('changed', 'equalto', true)
+      | list | length }}
+      DNS challenge record(s)
+  when:
+    - _letsencrypt_dns_records_created is defined
+    - _letsencrypt_dns_records_created.results is defined
+    - >-
+      _letsencrypt_dns_records_created.skipped is not defined or
+      not _letsencrypt_dns_records_created.skipped
+    - >-
+      _letsencrypt_dns_records_created.results
+      | rejectattr('skipped', 'defined')
+      | list | length > 0
+
+- name: Display no DNS records created message
+  ansible.builtin.debug:
+    msg: >-
+      No DNS records created -
+      challenges already validated
+  when: >-
+    _letsencrypt_dns_records_created is not defined or
+    (_letsencrypt_dns_records_created.skipped is defined and
+    _letsencrypt_dns_records_created.skipped)

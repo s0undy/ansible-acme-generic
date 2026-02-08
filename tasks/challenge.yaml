@@ -1,0 +1,105 @@
+---
+# Submit CSR to ACME CA and perform DNS challenge validation
+# Uses pluggable DNS provider via include_tasks
+
+- name: Submit CSR to ACME CA
+  community.crypto.acme_certificate:
+    acme_directory: "{{ _letsencrypt_acme_directory }}"
+    acme_version: "{{ letsencrypt_acme_version }}"
+    account_key_src: "{{ _letsencrypt_account_key_path }}"
+    account_email: "{{ letsencrypt_account_email }}"
+    modify_account: false
+    terms_agreed: true
+    challenge: "{{ letsencrypt_challenge_type }}"
+    csr: >-
+      {{ _letsencrypt_cert_dir }}/cert.csr
+    dest: >-
+      {{ _letsencrypt_cert_dir }}/cert.pem
+    chain_dest: >-
+      {{ _letsencrypt_cert_dir }}/chain.pem
+    fullchain_dest: >-
+      {{ _letsencrypt_cert_dir }}/fullchain.pem
+  register: _letsencrypt_acme_challenge
+
+- name: Debug ACME Challenge Info
+  ansible.builtin.debug:
+    var: _letsencrypt_acme_challenge
+  when: letsencrypt_debug | bool
+
+- name: Check if certificate was already retrieved
+  ansible.builtin.stat:
+    path: "{{ _letsencrypt_cert_dir }}/cert.pem"
+  register: letsencrypt_cert_retrieved
+
+- name: DNS Challenge and Certificate Validation
+  when:
+    - not letsencrypt_cert_retrieved.stat.exists or (_letsencrypt_acme_challenge.challenge_data | default({}) | length > 0)
+  block:
+    - name: Check if challenges need validation
+      ansible.builtin.debug:
+        msg: >-
+          {% if _letsencrypt_acme_challenge.challenge_data
+          | default({}) | length > 0 %}
+          Challenges need validation for
+          {{ _letsencrypt_acme_challenge.challenge_data.keys()
+          | list | length }} domain(s)
+          {% else %}
+          All domain challenges already validated -
+          proceeding to certificate retrieval
+          {% endif %}
+
+    - name: Create DNS challenge records
+      ansible.builtin.include_tasks: "{{ _letsencrypt_dns_tasks_dir }}/create.yaml"
+
+    - name: Wait for DNS propagation
+      ansible.builtin.pause:
+        seconds: "{{ letsencrypt_dns_propagation_wait }}"
+        prompt: >-
+          Waiting {{ letsencrypt_dns_propagation_wait }} seconds
+          for DNS records to propagate
+      when:
+        - _letsencrypt_dns_records_created is defined
+        - _letsencrypt_dns_records_created.results is defined
+        - >-
+          _letsencrypt_dns_records_created.results
+          | rejectattr('skipped', 'defined')
+          | selectattr('changed', 'equalto', true)
+          | list | length > 0
+
+    - name: Validate ACME challenge and retrieve certificate
+      community.crypto.acme_certificate:
+        acme_directory: "{{ _letsencrypt_acme_directory }}"
+        acme_version: "{{ letsencrypt_acme_version }}"
+        account_key_src: "{{ _letsencrypt_account_key_path }}"
+        account_email: "{{ letsencrypt_account_email }}"
+        modify_account: false
+        terms_agreed: true
+        challenge: "{{ letsencrypt_challenge_type }}"
+        csr: >-
+          {{ _letsencrypt_cert_dir }}/cert.csr
+        dest: >-
+          {{ _letsencrypt_cert_dir }}/cert.pem
+        chain_dest: >-
+          {{ _letsencrypt_cert_dir }}/chain.pem
+        fullchain_dest: >-
+          {{ _letsencrypt_cert_dir }}/fullchain.pem
+        remaining_days: 91
+        data: "{{ _letsencrypt_acme_challenge }}"
+      register: _letsencrypt_cert_validation
+
+  rescue:
+    - name: Display error message
+      ansible.builtin.debug:
+        msg: >-
+          Certificate validation failed.
+          DNS records will be cleaned up.
+
+    - name: Fail with error details
+      ansible.builtin.fail:
+        msg: >-
+          Failed to validate certificate:
+          {{ ansible_failed_result.msg | default('Unknown error') }}
+
+  always:
+    - name: Clean up DNS challenge records
+      ansible.builtin.include_tasks: "{{ _letsencrypt_dns_tasks_dir }}/cleanup.yaml"

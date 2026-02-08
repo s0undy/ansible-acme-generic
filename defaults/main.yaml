@@ -1,0 +1,114 @@
+---
+# ==============================================================================
+# Let's Encrypt Role - Default Variables
+# ==============================================================================
+# Override these in your playbook vars, group_vars, or host_vars.
+# Sensitive values (API tokens, emails) should go in an Ansible Vault file.
+# ==============================================================================
+
+# --- ACME Configuration ---
+
+# ACME protocol version (2 = ACMEv2)
+letsencrypt_acme_version: 2
+
+# Challenge type for domain validation
+letsencrypt_challenge_type: dns-01
+
+# Environment: "staging" or "production"
+# Staging has no rate limits - use it until everything works as expected
+# Production has rate limits - test with staging first!
+letsencrypt_environment: staging
+
+# Path to ACME account private key
+# Leave empty to auto-compute based on environment:
+#   staging    -> account/staging-account.key
+#   production -> account/production-account.key
+letsencrypt_account_key_path: ""
+
+# Account email for Let's Encrypt notifications (required)
+# letsencrypt_account_email: "admin@example.com"
+
+# --- ACME Account Key Configuration ---
+
+# Key type: "RSA" or "ECC"
+# Note: ACME account keys do NOT support Ed25519
+letsencrypt_account_key_type: ECC
+
+# RSA key size (only used when letsencrypt_account_key_type is RSA)
+# Options: 2048 (minimum), 4096 (recommended), 8192 (maximum security)
+letsencrypt_account_rsa_key_size: 4096
+
+# ECC curve (only used when letsencrypt_account_key_type is ECC)
+# Supported: secp256r1, secp384r1, secp521r1
+letsencrypt_account_ecc_curve: secp384r1
+
+# --- Certificate Configuration ---
+
+# Primary domain (required) - used as Common Name (CN)
+# letsencrypt_domain: "example.com"
+
+# Subject Alternative Names (SANs)
+# Examples:
+#   Wildcard:            ["*.example.com"]
+#   Specific subdomains: ["www.example.com", "api.example.com"]
+#   Combined:            ["*.example.com", "www.example.com"]
+letsencrypt_san_domains: []
+
+# Base directory for storing certificates
+letsencrypt_certs_base_dir: "{{ playbook_dir }}/certs"
+
+# Certificate name (used in directory structure: certs/{domain}/{name}/)
+letsencrypt_cert_name: default
+
+# --- Certificate Private Key Configuration ---
+
+# Key type: "RSA" or "ECC"
+# Note: Let's Encrypt does NOT support Ed25519, only RSA and ECDSA
+letsencrypt_private_key_type: ECC
+
+# RSA key size (only used when letsencrypt_private_key_type is RSA)
+letsencrypt_cert_rsa_key_size: 4096
+
+# ECC curve (only used when letsencrypt_private_key_type is ECC)
+# Supported: secp256r1 (P-256), secp384r1 (P-384), secp521r1 (P-521)
+letsencrypt_cert_ecc_curve: secp384r1
+
+# --- Certificate Renewal ---
+
+# Days before expiry to trigger renewal
+letsencrypt_renewal_days: 30
+
+# --- PFX/PKCS#12 Export ---
+
+# Export certificate as standard PFX
+letsencrypt_pfx_export: true
+
+# Export certificate as legacy PFX (for older systems like Windows/.NET)
+letsencrypt_pfx_legacy_export: true
+
+# --- DNS Provider ---
+
+# Built-in provider: "cloudflare"
+# For custom providers: set to "custom" and provide letsencrypt_dns_provider_tasks_dir
+letsencrypt_dns_provider: cloudflare
+
+# Path to custom DNS provider task directory (required when dns_provider is "custom")
+# Directory must contain create.yaml and cleanup.yaml
+letsencrypt_dns_provider_tasks_dir: ""
+
+# Seconds to wait for DNS propagation after creating challenge records
+letsencrypt_dns_propagation_wait: 60
+
+# --- Cloudflare DNS Provider ---
+# Only required when letsencrypt_dns_provider is "cloudflare"
+
+# Cloudflare API token with DNS edit permissions
+# letsencrypt_cloudflare_api_token: ""
+
+# Cloudflare zone (domain) that manages DNS
+# letsencrypt_cloudflare_zone: ""
+
+# --- Debug ---
+
+# Show detailed debug output during execution
+letsencrypt_debug: false

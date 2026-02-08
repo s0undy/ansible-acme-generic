@@ -1,0 +1,155 @@
+---
+# Certificate configuration, renewal check, passphrase, backup, key + CSR generation
+
+- name: Set up domain list for multi-domain/SAN support
+  ansible.builtin.set_fact:
+    _letsencrypt_all_domains: "{{ [letsencrypt_domain] + (letsencrypt_san_domains | default([])) }}"
+    _letsencrypt_cert_dir: "{{ letsencrypt_certs_base_dir }}/{{ letsencrypt_domain }}/{{ letsencrypt_cert_name }}"
+
+- name: Display domain configuration
+  ansible.builtin.debug:
+    msg:
+      - "Primary domain: {{ letsencrypt_domain }}"
+      - >-
+        Additional SANs:
+        {{ letsencrypt_san_domains | default([]) | join(', ')
+        if letsencrypt_san_domains | default([]) | length > 0
+        else 'None' }}
+      - "Total domains: {{ _letsencrypt_all_domains | length }}"
+      - "Certificate directory: {{ _letsencrypt_cert_dir }}"
+  when: letsencrypt_debug | bool
+
+- name: Create certificate directory
+  ansible.builtin.file:
+    path: "{{ _letsencrypt_cert_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Check if certificate already exists
+  ansible.builtin.stat:
+    path: "{{ _letsencrypt_cert_dir }}/cert.pem"
+  register: _letsencrypt_cert_stat
+
+- name: Get certificate expiration info
+  community.crypto.x509_certificate_info:
+    path: "{{ _letsencrypt_cert_dir }}/cert.pem"
+  register: _letsencrypt_cert_info
+  when: _letsencrypt_cert_stat.stat.exists
+
+- name: Set fact if certificate needs renewal
+  ansible.builtin.set_fact:
+    _letsencrypt_cert_needs_renewal: >-
+      {{
+        not _letsencrypt_cert_stat.stat.exists or
+        (_letsencrypt_cert_info.expired | default(true)) or
+        (((_letsencrypt_cert_info.not_after | default('1970-01-01T00:00:00')
+          | to_datetime('%Y%m%d%H%M%SZ')) -
+          (ansible_facts.date_time.iso8601
+          | to_datetime('%Y-%m-%dT%H:%M:%SZ')))
+          .total_seconds() < (letsencrypt_renewal_days | int * 86400))
+      }}
+
+- name: Display certificate status
+  ansible.builtin.debug:
+    msg: >-
+      {% if not _letsencrypt_cert_stat.stat.exists %}
+      Certificate does not exist. Will generate new certificate.
+      {% elif _letsencrypt_cert_info.expired | default(false) %}
+      Certificate has expired. Will renew.
+      {% elif _letsencrypt_cert_needs_renewal | bool %}
+      Certificate expires soon
+      ({{ _letsencrypt_cert_info.not_after[:4] }}-{{ _letsencrypt_cert_info.not_after[4:6] }}-
+      {{ _letsencrypt_cert_info.not_after[6:8] }}
+      {{ _letsencrypt_cert_info.not_after[8:10] }}:{{ _letsencrypt_cert_info.not_after[10:12] }}
+      UTC). Will renew.
+      {% else %}
+      Certificate is valid until
+      {{ _letsencrypt_cert_info.not_after[:4] }}-{{ _letsencrypt_cert_info.not_after[4:6] }}-
+      {{ _letsencrypt_cert_info.not_after[6:8] }}
+      {{ _letsencrypt_cert_info.not_after[8:10] }}:{{ _letsencrypt_cert_info.not_after[10:12] }}
+      UTC. Skipping renewal.
+      {% endif %}
+  when: letsencrypt_debug | bool
+
+- name: Check for existing passphrase file
+  ansible.builtin.stat:
+    path: "{{ _letsencrypt_cert_dir }}/passphrase.txt"
+  register: _letsencrypt_passphrase_stat
+  when: _letsencrypt_cert_needs_renewal | bool
+
+- name: Load existing passphrase
+  ansible.builtin.slurp:
+    path: "{{ _letsencrypt_cert_dir }}/passphrase.txt"
+  register: _letsencrypt_passphrase_file
+  when:
+    - _letsencrypt_cert_needs_renewal | bool
+    - _letsencrypt_passphrase_stat.stat.exists | default(false)
+
+- name: Set passphrase from existing file
+  ansible.builtin.set_fact:
+    _letsencrypt_passphrase: "{{ _letsencrypt_passphrase_file.content | b64decode | trim }}"
+  when:
+    - _letsencrypt_cert_needs_renewal | bool
+    - _letsencrypt_passphrase_stat.stat.exists | default(false)
+
+- name: Generate random string as passphrase
+  ansible.builtin.set_fact:
+    _letsencrypt_passphrase: >-
+      {{ lookup('community.general.random_string', length=24) }}
+  when:
+    - _letsencrypt_cert_needs_renewal | bool
+    - not (_letsencrypt_passphrase_stat.stat.exists | default(false))
+
+- name: Create backup directory for existing certificates
+  ansible.builtin.file:
+    path: "{{ _letsencrypt_cert_dir }}/backups"
+    state: directory
+    mode: '0755'
+  when:
+    - _letsencrypt_cert_needs_renewal | bool
+    - _letsencrypt_cert_stat.stat.exists
+
+- name: Backup existing certificates
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: >-
+      {{ _letsencrypt_cert_dir }}/backups/
+      {{ item | basename }}.{{ ansible_facts.date_time.iso8601_basic_short }}
+    remote_src: true
+    mode: preserve
+  loop:
+    - "{{ _letsencrypt_cert_dir }}/cert.pem"
+    - "{{ _letsencrypt_cert_dir }}/chain.pem"
+    - "{{ _letsencrypt_cert_dir }}/fullchain.pem"
+    - "{{ _letsencrypt_cert_dir }}/privatekey.pem"
+  when:
+    - _letsencrypt_cert_needs_renewal | bool
+    - _letsencrypt_cert_stat.stat.exists
+  failed_when: false
+
+- name: Save passphrase to file
+  ansible.builtin.copy:
+    content: "{{ _letsencrypt_passphrase }}"
+    dest: "{{ _letsencrypt_cert_dir }}/passphrase.txt"
+    mode: '0600'
+  when: _letsencrypt_cert_needs_renewal | bool
+
+- name: Generate private key for certificate
+  community.crypto.openssl_privatekey:
+    path: "{{ _letsencrypt_cert_dir }}/privatekey.pem"
+    type: "{{ letsencrypt_private_key_type }}"
+    size: "{{ letsencrypt_cert_rsa_key_size if letsencrypt_private_key_type == 'RSA' else omit }}"
+    curve: "{{ letsencrypt_cert_ecc_curve if letsencrypt_private_key_type == 'ECC' else omit }}"
+    cipher: auto
+    passphrase: "{{ _letsencrypt_passphrase }}"
+  when: _letsencrypt_cert_needs_renewal | bool
+
+- name: Generate CSR with SAN support
+  community.crypto.openssl_csr:
+    path: "{{ _letsencrypt_cert_dir }}/cert.csr"
+    privatekey_path: >-
+      {{ _letsencrypt_cert_dir }}/privatekey.pem
+    privatekey_passphrase: "{{ _letsencrypt_passphrase }}"
+    common_name: "{{ letsencrypt_domain }}"
+    subject_alt_name: "{{ _letsencrypt_all_domains | map('regex_replace', '^', 'DNS:') | list }}"
+  when: _letsencrypt_cert_needs_renewal | bool

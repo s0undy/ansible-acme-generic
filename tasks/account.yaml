@@ -1,0 +1,38 @@
+---
+# ACME account key generation and registration
+
+- name: Generate private key for ACME account
+  community.crypto.openssl_privatekey:
+    path: "{{ _letsencrypt_account_key_path }}"
+    mode: '0600'
+    type: "{{ letsencrypt_account_key_type }}"
+    size: "{{ letsencrypt_account_rsa_key_size if letsencrypt_account_key_type == 'RSA' else omit }}"
+    curve: "{{ letsencrypt_account_ecc_curve if letsencrypt_account_key_type == 'ECC' else omit }}"
+
+- name: Enforce account key permissions (0600)
+  ansible.builtin.file:
+    path: "{{ _letsencrypt_account_key_path }}"
+    mode: '0600'
+
+- name: Register ACME account with Let's Encrypt
+  community.crypto.acme_account:
+    acme_directory: "{{ _letsencrypt_acme_directory }}"
+    acme_version: "{{ letsencrypt_acme_version }}"
+    account_key_src: "{{ _letsencrypt_account_key_path }}"
+    terms_agreed: true
+    state: present
+    contact:
+      - "mailto:{{ letsencrypt_account_email }}"
+
+- name: Get ACME Account Info for debugging
+  community.crypto.acme_account_info:
+    acme_directory: "{{ _letsencrypt_acme_directory }}"
+    account_key_src: "{{ _letsencrypt_account_key_path }}"
+    acme_version: "{{ letsencrypt_acme_version }}"
+  register: _letsencrypt_account_info
+  when: letsencrypt_debug | bool
+
+- name: Debug ACME Account Info
+  ansible.builtin.debug:
+    var: _letsencrypt_account_info
+  when: letsencrypt_debug | bool
