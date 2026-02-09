@@ -111,6 +111,15 @@ Example:
   when: item in _letsencrypt_acme_challenge.get('challenge_data', {})
 ```
 
+## Roadmap
+
+- GitHub Actions
+- Tests (Using Molecule)
+- Other DNS Provider
+- Windows DNS support
+- Additional ACME providers (ZeroSSL, ?)
+
+
 ## Requirements
 
 - `community.crypto` collection
@@ -119,3 +128,7 @@ Example:
 ## License
 
 AGPL-3.0
+
+## AI Usage
+
+LLMs has been used to write parts of the project. All code has been verified by a human.
