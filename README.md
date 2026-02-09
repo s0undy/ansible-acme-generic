@@ -1,6 +1,6 @@
-# Ansible & ACME - Certificate generation
+# Ansible: ACME Generic
 
-Ansible role for generating SSL certificates via ACME enrollment. Currently supports Let's Encrypt as ACME provider and Cloudflare as DNS provider.
+Ansible role for generating SSL certificates via ACME enrollment. Currently supports ACME to Let's Encrypt with Cloudflare as DNS provider. Planned suport for more ACME CA's and DNS providers including your own Windows DNS
 
 ## Usage
 
